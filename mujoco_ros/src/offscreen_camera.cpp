@@ -47,10 +47,11 @@
 
 namespace mujoco_ros::rendering {
 
-OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_name, const int width, const int height,
-                                 const streamType stream_type, const bool use_segid, const float pub_freq,
-                                 image_transport::ImageTransport *it, const ros::NodeHandle &parent_nh,
-                                 const mjModel *model, mjData *data, mujoco_ros::MujocoEnv *env_ptr)
+OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &base_topic, const std::string &cam_name,
+                                 const int width, const int height, const streamType stream_type, const bool use_segid,
+                                 const float pub_freq, image_transport::ImageTransport *it,
+                                 const ros::NodeHandle &parent_nh, const mjModel *model, mjData *data,
+                                 mujoco_ros::MujocoEnv *env_ptr)
     : cam_id_(cam_id)
     , cam_name_(cam_name)
     , width_(width)
@@ -60,7 +61,7 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
     , pub_freq_(pub_freq)
 {
 	last_pub_ = ros::Time::now();
-	ros::NodeHandle nh(parent_nh, "cameras/" + cam_name);
+	ros::NodeHandle nh(parent_nh, base_topic);
 
 	mjv_defaultOption(&vopt_);
 	mjv_defaultSceneState(&scn_state_);
@@ -68,15 +69,15 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
 
 	if (stream_type & streamType::RGB) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating rgb publisher");
-		rgb_pub_ = it->advertise("cameras/" + cam_name + "/rgb", 1);
+		rgb_pub_ = it->advertise(base_topic + "/rgb", 1);
 	}
 	if (stream_type & streamType::DEPTH) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating depth publisher");
-		depth_pub_ = it->advertise("cameras/" + cam_name + "/depth", 1);
+		depth_pub_ = it->advertise(base_topic + "/depth", 1);
 	}
 	if (stream_type & streamType::SEGMENTED) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating segmentation publisher");
-		segment_pub_ = it->advertise("cameras/" + cam_name + "/segmented", 1);
+		segment_pub_ = it->advertise(base_topic + "/segmented", 1);
 	}
 
 	ROS_DEBUG_STREAM_NAMED("mujoco_env", "\tSetting up camera stream(s) of type '"

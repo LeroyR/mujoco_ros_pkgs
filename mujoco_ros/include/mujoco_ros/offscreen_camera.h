@@ -53,8 +53,8 @@ namespace mujoco_ros::rendering {
 class OffscreenCamera
 {
 public:
-	OffscreenCamera(const uint8_t cam_id, const std::string &cam_name, const int width, const int height,
-	                const streamType stream_type, const bool use_segid, const float pub_freq,
+	OffscreenCamera(const uint8_t cam_id, const std::string &base_topic, const std::string &cam_name, const int width,
+	                const int height, const streamType stream_type, const bool use_segid, const float pub_freq,
 	                image_transport::ImageTransport *it, const ros::NodeHandle &parent_nh, const mjModel *model,
 	                mjData *data, mujoco_ros::MujocoEnv *env_ptr);
 
@@ -71,6 +71,7 @@ public:
 
 	uint8_t cam_id_;
 	std::string cam_name_;
+	std::string topic_;
 	int width_, height_;
 	streamType stream_type_ = streamType::RGB;
 	bool use_segid_         = true;
