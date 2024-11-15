@@ -47,10 +47,12 @@
 
 namespace mujoco_ros::rendering {
 
-OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_name, const int width, const int height,
+OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &base_topic, const std::string &rgb_topic,
+                                 const std::string &depth_topic, const std::string &segment_topic,
+                                 const std::string &cam_name, const int width, const int height,
                                  const streamType stream_type, const bool use_segid, const float pub_freq,
-                                 image_transport::ImageTransport *it, const ros::NodeHandle &parent_nh,
-                                 const mjModel *model, mjData *data, mujoco_ros::MujocoEnv *env_ptr)
+                                 const ros::NodeHandle &parent_nh, const mjModel *model, mjData *data,
+                                 mujoco_ros::MujocoEnv *env_ptr)
     : cam_id_(cam_id)
     , cam_name_(cam_name)
     , width_(width)
@@ -58,9 +60,10 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
     , stream_type_(stream_type)
     , use_segid_(use_segid)
     , pub_freq_(pub_freq)
+    , nh_(parent_nh, base_topic)
+    , it_(nh_)
 {
 	last_pub_ = ros::Time::now();
-	ros::NodeHandle nh(parent_nh, "cameras/" + cam_name);
 
 	mjv_defaultOption(&vopt_);
 	mjv_defaultSceneState(&scn_state_);
@@ -68,15 +71,18 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
 
 	if (stream_type & streamType::RGB) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating rgb publisher");
-		rgb_pub_ = it->advertise("cameras/" + cam_name + "/rgb", 1);
+		rgb_pub_             = it_.advertise(rgb_topic + "/image_raw", 1);
+		rgb_camera_info_pub_ = nh_.advertise<sensor_msgs::CameraInfo>(rgb_topic + "/camera_info", 1, true);
 	}
 	if (stream_type & streamType::DEPTH) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating depth publisher");
-		depth_pub_ = it->advertise("cameras/" + cam_name + "/depth", 1);
+		depth_pub_             = it_.advertise(depth_topic + "/image_raw", 1);
+		depth_camera_info_pub_ = nh_.advertise<sensor_msgs::CameraInfo>(depth_topic + "/camera_info", 1, true);
 	}
 	if (stream_type & streamType::SEGMENTED) {
 		ROS_DEBUG_NAMED("mujoco_env", "\tCreating segmentation publisher");
-		segment_pub_ = it->advertise("cameras/" + cam_name + "/segmented", 1);
+		segment_pub_             = it_.advertise(segment_topic + "/image_raw", 1);
+		segment_camera_info_pub_ = nh_.advertise<sensor_msgs::CameraInfo>(segment_topic + "/camera_info", 1, true);
 	}
 
 	ROS_DEBUG_STREAM_NAMED("mujoco_env", "\tSetting up camera stream(s) of type '"
@@ -120,7 +126,7 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
 	env_ptr->registerStaticTransform(cam_transform);
 
 	// init camera info manager
-	camera_info_manager_ = std::make_unique<camera_info_manager::CameraInfoManager>(nh, cam_name);
+	camera_info_manager_ = std::make_unique<camera_info_manager::CameraInfoManager>(nh_, cam_name);
 
 	// Get camera info
 	mjtNum cam_pos[3];
@@ -153,7 +159,6 @@ OffscreenCamera::OffscreenCamera(const uint8_t cam_id, const std::string &cam_na
 	mju_copy(ci.K.c_array() + 6, extrinsic + 8, 3);
 
 	camera_info_manager_->setCameraInfo(ci);
-	camera_info_pub_ = nh.advertise<sensor_msgs::CameraInfo>("camera_info", 1, true);
 }
 
 bool OffscreenCamera::shouldRender(const ros::Time &t)
@@ -166,10 +171,13 @@ bool OffscreenCamera::renderAndPubIfNecessary(mujoco_ros::OffscreenRenderContext
                                               const bool depth, const bool segment)
 {
 	if ((!rgb && !depth) || // nothing to render
-	    (rgb_pub_.getNumSubscribers() == 0 && depth_pub_.getNumSubscribers() == 0) || // no subscribers
-	    (!rgb && depth_pub_.getNumSubscribers() == 0) ||
-	    (!depth && ((rgb_pub_.getNumSubscribers() == 0 && !segment) || // would render depth but no depth subscribers
-	                (segment && segment_pub_.getNumSubscribers() == 0)))) { // would render rgb but no rgb subscribers
+	    (rgb_camera_info_pub_.getNumSubscribers() == 0 && rgb_pub_.getNumSubscribers() == 0 &&
+	     depth_camera_info_pub_.getNumSubscribers() == 0 && depth_pub_.getNumSubscribers() == 0) || // no subscribers
+	    (!rgb && depth_camera_info_pub_.getNumSubscribers() == 0 && depth_pub_.getNumSubscribers() == 0) ||
+	    (!depth && ((rgb_camera_info_pub_.getNumSubscribers() == 0 && rgb_pub_.getNumSubscribers() == 0 &&
+	                 !segment) || // would render depth but no depth subscribers
+	                (segment && segment_camera_info_pub_.getNumSubscribers() == 0 &&
+	                 segment_pub_.getNumSubscribers() == 0)))) { // would render rgb but no rgb subscribers
 		return false;
 	}
 
@@ -194,11 +202,16 @@ bool OffscreenCamera::renderAndPubIfNecessary(mujoco_ros::OffscreenRenderContext
 	}
 	glfwSwapBuffers(offscreen->window.get());
 
+	// create info msg
+	auto ros_time                           = ros::Time(scn_state_.data.time);
+	sensor_msgs::CameraInfo camera_info_msg = camera_info_manager_->getCameraInfo();
+	camera_info_msg.header.stamp            = ros_time;
+
 	if (rgb) {
 		// Publish RGB image
 		sensor_msgs::ImagePtr rgb_msg = boost::make_shared<sensor_msgs::Image>();
 		rgb_msg->header.frame_id      = cam_name_ + "_optical_frame";
-		rgb_msg->header.stamp         = ros::Time(scn_state_.data.time);
+		rgb_msg->header.stamp         = ros_time;
 		rgb_msg->width                = static_cast<decltype(rgb_msg->width)>(viewport.width);
 		rgb_msg->height               = static_cast<decltype(rgb_msg->height)>(viewport.height);
 		rgb_msg->encoding             = sensor_msgs::image_encodings::RGB8;
@@ -216,8 +229,10 @@ bool OffscreenCamera::renderAndPubIfNecessary(mujoco_ros::OffscreenRenderContext
 
 		if (segment) {
 			segment_pub_.publish(rgb_msg);
+			segment_camera_info_pub_.publish(camera_info_msg);
 		} else {
 			rgb_pub_.publish(rgb_msg);
+			rgb_camera_info_pub_.publish(camera_info_msg);
 		}
 	}
 
@@ -225,7 +240,7 @@ bool OffscreenCamera::renderAndPubIfNecessary(mujoco_ros::OffscreenRenderContext
 		// Publish DEPTH image
 		sensor_msgs::ImagePtr depth_msg = boost::make_shared<sensor_msgs::Image>();
 		depth_msg->header.frame_id      = cam_name_ + "_optical_frame";
-		depth_msg->header.stamp         = ros::Time(scn_state_.data.time);
+		depth_msg->header.stamp         = ros_time;
 		depth_msg->width                = util::as_unsigned(viewport.width);
 		depth_msg->height               = util::as_unsigned(viewport.height);
 		depth_msg->encoding             = sensor_msgs::image_encodings::TYPE_32FC1;
@@ -249,7 +264,9 @@ bool OffscreenCamera::renderAndPubIfNecessary(mujoco_ros::OffscreenRenderContext
 		}
 
 		depth_pub_.publish(depth_msg);
+		depth_camera_info_pub_.publish(camera_info_msg);
 	}
+
 	return true;
 }
 
@@ -297,18 +314,6 @@ void OffscreenCamera::renderAndPublish(mujoco_ros::OffscreenRenderContext *offsc
 		offscreen->scn.flags[mjRND_SEGMENT] = 1;
 		rendered                            = renderAndPubIfNecessary(offscreen, segment, true, segment);
 	}
-
-	if (rendered) {
-		publishCameraInfo();
-	}
-}
-
-void OffscreenCamera::publishCameraInfo()
-{
-	sensor_msgs::CameraInfo camera_info_msg = camera_info_manager_->getCameraInfo();
-	camera_info_msg.header.stamp            = ros::Time::now();
-
-	camera_info_pub_.publish(camera_info_msg);
 }
 
 } // namespace mujoco_ros::rendering
